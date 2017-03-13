@@ -56,7 +56,34 @@ func run(conf *config) func(c *cli.Context) error {
 		// Based on the combination of flags, call against the correct log
 		// endpoint.
 		var meta *logshare.Meta
-		if conf.rayID != "" {
+		if conf.forever {
+			endTime := time.Now().Add(-conf.offset)
+			startTime := endTime.Add(-conf.interval)
+
+			tick := time.Tick(conf.interval)
+			for {
+				go func() error {
+					log.Println(startTime, endTime)
+					meta, err = client.GetFromTimestamp(conf.zoneID, startTime.Unix(), endTime.Unix(), -1)
+					if err != nil {
+						if meta.StatusCode != 204 {
+							return errors.Wrap(err, "failed to fetch via timestamp")
+						}
+					}
+					log.Printf("HTTP status %d | %dms | %s",
+						meta.StatusCode, meta.Duration, meta.URL)
+					log.Printf("Retrieved %d logs", meta.Count)
+
+					return nil
+				}()
+
+				<-tick
+
+				startTime = endTime
+				endTime = time.Now().Add(-conf.offset)
+			}
+
+		} else if conf.rayID != "" {
 			meta, err = client.GetFromRayID(
 				conf.zoneID, conf.rayID, conf.endTime, conf.count)
 			if err != nil {
@@ -79,6 +106,8 @@ func run(conf *config) func(c *cli.Context) error {
 }
 
 func parseFlags(conf *config, c *cli.Context) error {
+	var err error
+
 	conf.apiKey = c.String("api-key")
 	conf.apiEmail = c.String("api-email")
 	conf.zoneID = c.String("zone-id")
@@ -87,6 +116,15 @@ func parseFlags(conf *config, c *cli.Context) error {
 	conf.startTime = c.Int64("start-time")
 	conf.endTime = c.Int64("end-time")
 	conf.count = c.Int("count")
+	conf.forever = c.Bool("forever")
+	conf.offset, err = time.ParseDuration(c.String("offset"))
+	if err != nil {
+		return err
+	}
+	conf.interval, err = time.ParseDuration(c.String("interval"))
+	if err != nil {
+		return err
+	}
 
 	return conf.Validate()
 }
@@ -100,6 +138,9 @@ type config struct {
 	startTime int64
 	endTime   int64
 	count     int
+	forever   bool
+	offset    time.Duration
+	interval  time.Duration
 }
 
 func (conf *config) Validate() error {
@@ -149,5 +190,19 @@ var flags = []cli.Flag{
 		Name:  "count",
 		Value: 1,
 		Usage: "The number (count) of logs to retrieve. Pass '-1' to retrieve all logs for the given time period",
+	},
+	cli.BoolFlag{
+		Name:  "forever",
+		Usage: "Run forever. It requests logs from some time behind (--offset) every given period (--interval) ",
+	},
+	cli.StringFlag{
+		Name:  "interval",
+		Value: "10m",
+		Usage: "Minimum time to wait between requests in --forever mode. If a request takes longer than this, it adjusts accordingly. Defaults to 10 minutes",
+	},
+	cli.StringFlag{
+		Name:  "offset",
+		Value: "30m",
+		Usage: "How much time behind to request logs from in --forever mode. Defaults to 30m behind the current time",
 	},
 }
